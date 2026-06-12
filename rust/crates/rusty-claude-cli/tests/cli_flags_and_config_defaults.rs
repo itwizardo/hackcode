@@ -15,7 +15,7 @@ fn status_command_applies_model_and_permission_mode_flags() {
     fs::create_dir_all(&temp_dir).expect("temp dir should exist");
 
     // when
-    let output = Command::new(env!("CARGO_BIN_EXE_claw"))
+    let output = Command::new(env!("CARGO_BIN_EXE_hackcode"))
         .current_dir(&temp_dir)
         .args([
             "--model",
@@ -45,7 +45,7 @@ fn resume_flag_loads_a_saved_session_and_dispatches_status() {
     let session_path = write_session(&temp_dir, "resume-status");
 
     // when
-    let output = Command::new(env!("CARGO_BIN_EXE_claw"))
+    let output = Command::new(env!("CARGO_BIN_EXE_hackcode"))
         .current_dir(&temp_dir)
         .args([
             "--resume",
@@ -73,12 +73,12 @@ fn slash_command_names_match_known_commands_and_suggest_nearby_unknown_ones() {
     fs::create_dir_all(&temp_dir).expect("temp dir should exist");
 
     // when
-    let help_output = Command::new(env!("CARGO_BIN_EXE_claw"))
+    let help_output = Command::new(env!("CARGO_BIN_EXE_hackcode"))
         .current_dir(&temp_dir)
         .arg("/help")
         .output()
         .expect("claw should launch");
-    let unknown_output = Command::new(env!("CARGO_BIN_EXE_claw"))
+    let unknown_output = Command::new(env!("CARGO_BIN_EXE_hackcode"))
         .current_dir(&temp_dir)
         .arg("/zstats")
         .output()
@@ -109,7 +109,7 @@ fn omc_namespaced_slash_commands_surface_a_targeted_compatibility_hint() {
     let temp_dir = unique_temp_dir("slash-dispatch-omc");
     fs::create_dir_all(&temp_dir).expect("temp dir should exist");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_claw"))
+    let output = Command::new(env!("CARGO_BIN_EXE_hackcode"))
         .current_dir(&temp_dir)
         .arg("/oh-my-claudecode:hud")
         .output()
@@ -259,7 +259,7 @@ fn local_subcommand_help_does_not_fall_through_to_runtime_or_provider_calls() {
 }
 
 fn command_in(cwd: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_claw"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_hackcode"));
     command.current_dir(cwd);
     command
 }

@@ -308,7 +308,7 @@ struct ScenarioReport {
 }
 
 fn run_case(case: ScenarioCase, workspace: &HarnessWorkspace, base_url: &str) -> ScenarioRun {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_claw"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_hackcode"));
     command
         .current_dir(&workspace.root)
         .env_clear()

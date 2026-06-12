@@ -543,7 +543,7 @@ fn workspace_session(root: &Path) -> Session {
 }
 
 fn run_claw_with_env(current_dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_claw"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_hackcode"));
     command.current_dir(current_dir).args(args);
     for (key, value) in envs {
         command.env(key, value);

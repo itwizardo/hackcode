@@ -155,6 +155,7 @@ error: {message}
 Run `hackcode --help` for usage."
             );
         }
+        }
         std::process::exit(1);
     }
 }
@@ -391,7 +392,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 allow_broad_cwd,
             )?;
         }
-        CliAction::HelpTopic(topic) => print_help_topic(topic),
+        CliAction::HelpTopic {
+            topic,
+            output_format,
+        } => print_help_topic(topic, output_format)?,
         CliAction::Help { output_format } => print_help(output_format)?,
         CliAction::Setup => setup::run_setup()?,
         CliAction::Scan => {
@@ -502,7 +506,10 @@ enum CliAction {
         reasoning_effort: Option<String>,
         allow_broad_cwd: bool,
     },
-    HelpTopic(LocalHelpTopic),
+    HelpTopic {
+        topic: LocalHelpTopic,
+        output_format: CliOutputFormat,
+    },
     Setup,
     Scan,
     Update,
@@ -6131,6 +6138,20 @@ fn collect_sessions_from_dir(
     if !directory.exists() {
         return Ok(());
     }
+    // #148: classify the workspace lifecycle once (saved-only / idle-shell /
+    // running-process, plus dirty-worktree and abandoned flags) and share it
+    // across the sessions in this store — they all belong to the same
+    // workspace-fingerprinted directory.
+    let lifecycle = env::current_dir()
+        .map(|cwd| classify_session_lifecycle_for(&cwd))
+        .unwrap_or(SessionLifecycleSummary {
+            kind: SessionLifecycleKind::SavedOnly,
+            pane_id: None,
+            pane_command: None,
+            pane_path: None,
+            workspace_dirty: false,
+            abandoned: false,
+        });
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         let path = entry.path();
@@ -6180,6 +6201,7 @@ fn collect_sessions_from_dir(
             message_count,
             parent_session_id,
             branch_name,
+            lifecycle: lifecycle.clone(),
         });
     }
     Ok(())
@@ -6424,6 +6446,82 @@ fn print_status_snapshot(
         ),
     }
     Ok(())
+}
+
+/// #148: where the resolved model string originated from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelSource {
+    Flag,
+    Env,
+    Config,
+    Default,
+}
+
+impl ModelSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            ModelSource::Flag => "flag",
+            ModelSource::Env => "env",
+            ModelSource::Config => "config",
+            ModelSource::Default => "default",
+        }
+    }
+}
+
+/// #148: provenance of the model selection — the resolved (alias-expanded)
+/// name, the raw user/env input before resolution, and which source won.
+#[derive(Debug, Clone)]
+struct ModelProvenance {
+    resolved: String,
+    raw: Option<String>,
+    source: ModelSource,
+}
+
+impl ModelProvenance {
+    /// Probe the model-selection env vars; attribute to env when one is set,
+    /// otherwise treat the resolved model as a built-in default.
+    fn from_env_or_config_or_default(model: &str) -> Self {
+        for key in ["HACKCODE_MODEL", "CLAW_MODEL", "ANTHROPIC_MODEL"] {
+            if let Ok(value) = std::env::var(key) {
+                let trimmed = value.trim();
+                if !trimmed.is_empty() {
+                    return Self {
+                        resolved: model.to_string(),
+                        raw: Some(trimmed.to_string()),
+                        source: ModelSource::Env,
+                    };
+                }
+            }
+        }
+        Self {
+            resolved: model.to_string(),
+            raw: None,
+            source: ModelSource::Default,
+        }
+    }
+}
+
+/// #148: compute the stale-base commit state for `cwd`, honoring an optional
+/// `--base-commit` flag value (falls back to the `.hackcode-base` file).
+fn stale_base_state_for(cwd: &Path, flag_value: Option<&str>) -> BaseCommitState {
+    let source = resolve_expected_base(flag_value, cwd);
+    check_base_commit(cwd, source.as_ref())
+}
+
+/// #148: render a [`BaseCommitState`] as a JSON object with a stable `status`
+/// token and a `fresh` boolean (false only when the worktree has diverged).
+fn stale_base_json_value(state: &BaseCommitState) -> serde_json::Value {
+    match state {
+        BaseCommitState::Matches => json!({ "status": "matches", "fresh": true }),
+        BaseCommitState::NoExpectedBase => json!({ "status": "no_expected_base", "fresh": true }),
+        BaseCommitState::NotAGitRepo => json!({ "status": "not_a_git_repo", "fresh": true }),
+        BaseCommitState::Diverged { expected, actual } => json!({
+            "status": "diverged",
+            "fresh": false,
+            "expected": expected,
+            "actual": actual,
+        }),
+    }
 }
 
 fn status_json_value(

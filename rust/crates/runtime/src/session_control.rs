@@ -31,7 +31,10 @@ impl SessionStore {
     /// The on-disk layout becomes `<cwd>/.hackcode/sessions/<workspace_hash>/`.
     pub fn from_cwd(cwd: impl AsRef<Path>) -> Result<Self, SessionControlError> {
         let cwd = cwd.as_ref();
-        let sessions_root = cwd
+        // #151: canonicalize cwd for consistent fingerprinting across
+        // equivalent path representations.
+        let canonical_cwd = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+        let sessions_root = canonical_cwd
             .join(".hackcode")
             .join("sessions")
             .join(workspace_fingerprint(&canonical_cwd));

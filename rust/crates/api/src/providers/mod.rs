@@ -257,7 +257,9 @@ pub fn detect_provider_kind(model: &str) -> ProviderKind {
 pub const fn model_family_identity_for_kind(kind: ProviderKind) -> runtime::ModelFamilyIdentity {
     match kind {
         ProviderKind::Anthropic => runtime::ModelFamilyIdentity::Claude,
-        ProviderKind::Xai | ProviderKind::OpenAi => runtime::ModelFamilyIdentity::Generic,
+        ProviderKind::Xai | ProviderKind::OpenAi | ProviderKind::Ollama => {
+            runtime::ModelFamilyIdentity::Generic
+        }
     }
 }
 

@@ -250,7 +250,7 @@ fn run_claw(
     base_url: &str,
     args: &[&str],
 ) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_claw"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_hackcode"));
     command
         .current_dir(cwd)
         .env_clear()
