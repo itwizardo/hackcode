@@ -1019,7 +1019,27 @@ pub fn build_chat_completion_request(
         payload["reasoning_effort"] = json!(effort);
     }
 
+    // Local aeon (Qwen3.5-MTP) intermittently opens a `<think>` block and never
+    // emits the closing `</think>` within the token budget — even on trivial
+    // turns. The server's `--reasoning-parser qwen3` then cannot split the
+    // output, so `content` comes back empty and the REPL prints "(no response)".
+    // Disable thinking for this model via the Qwen chat template switch so it
+    // answers directly. Targeted by wire model name; no effect on other backends.
+    if model_disables_thinking(wire_model) {
+        payload["chat_template_kwargs"] = json!({ "enable_thinking": false });
+    }
+
     payload
+}
+
+/// Returns true for local models that must run with thinking disabled to avoid
+/// unclosed `<think>` blocks swallowing the entire response. Currently the
+/// Qwen3.5-MTP "aeon" served on the local vLLM rig.
+#[must_use]
+pub fn model_disables_thinking(wire_model: &str) -> bool {
+    let canonical = wire_model.rsplit('/').next().unwrap_or(wire_model);
+    let lowered = canonical.to_ascii_lowercase();
+    lowered == "aeon" || lowered.starts_with("qwen3.5") || lowered.starts_with("qwen3_5")
 }
 
 /// Returns true for models that do NOT support the `is_error` field in tool results.
