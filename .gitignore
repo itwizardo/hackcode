@@ -10,3 +10,9 @@ archive/
 .claw/sessions/
 .clawhip/
 status-help.txt
+
+# HackCode local artifacts (sessions, agents) — never commit to a public repo
+.hackcode/
+.hackcode-agents/
+# macOS
+.DS_Store
