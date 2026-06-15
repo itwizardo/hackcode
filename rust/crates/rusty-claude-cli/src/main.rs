@@ -5104,6 +5104,7 @@ impl LiveCli {
     }
 
     fn run_turn(&mut self, input: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let turn_start = std::time::Instant::now();
         let (mut runtime, hook_abort_monitor) = self.prepare_turn_runtime(true)?;
         let mut spinner = Spinner::new();
         let mut stdout = io::stdout();
@@ -5128,6 +5129,27 @@ impl LiveCli {
                     println!("{final_text}");
                 }
                 println!();
+                // Per-turn footer: token counts + wall-clock, so usage and
+                // latency are always visible (dim, single line).
+                {
+                    let u = summary.usage;
+                    let compact = |n: u32| {
+                        if n >= 1000 {
+                            format!("{:.1}k", f64::from(n) / 1000.0)
+                        } else {
+                            n.to_string()
+                        }
+                    };
+                    let tokens_in =
+                        u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens;
+                    println!(
+                        "\x1b[2m  {}↑ {}↓ · {} tok · {}s\x1b[0m",
+                        compact(tokens_in),
+                        compact(u.output_tokens),
+                        compact(u.total_tokens()),
+                        turn_start.elapsed().as_secs()
+                    );
+                }
                 if let Some(event) = summary.auto_compaction {
                     println!(
                         "{}",
