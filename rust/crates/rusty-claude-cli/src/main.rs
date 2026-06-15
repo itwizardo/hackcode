@@ -1554,6 +1554,17 @@ fn config_model_for_current_dir() -> Option<String> {
 /// Ensure Ollama is running and first-run setup has been completed.
 /// Called automatically before REPL or Prompt actions.
 fn ensure_hackcode_ready() -> Result<(), Box<dyn std::error::Error>> {
+    // A non-Ollama provider configured via env (OpenAI-compatible / Anthropic,
+    // e.g. a local vLLM) means the local-first Ollama path is not in use — skip
+    // the Ollama setup wizard and the local-Ollama requirement entirely.
+    if env::var("OPENAI_BASE_URL").is_ok()
+        || env::var("OPENAI_API_KEY").is_ok()
+        || env::var("ANTHROPIC_BASE_URL").is_ok()
+        || env::var("ANTHROPIC_AUTH_TOKEN").is_ok()
+    {
+        return Ok(());
+    }
+
     let config_path = env::var("HOME")
         .map(|h| PathBuf::from(h).join(".config").join("hackcode").join("config.json"))
         .unwrap_or_default();
