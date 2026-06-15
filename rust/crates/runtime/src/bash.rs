@@ -176,32 +176,17 @@ async fn execute_bash_async(
 
     let mut command = prepare_tokio_command(&input.command, &cwd, &sandbox_status, true);
 
-    // The model often passes timeout values thinking they're seconds (e.g. 60)
-    // but the parameter is in milliseconds.  Enforce a 30-second floor so
-    // network commands (nmap, curl, ping) actually have time to finish.
+    // `timeout` is honored exactly as supplied (milliseconds). We deliberately do
+    // not floor it: an explicit timeout should mean what it says so callers can
+    // bound a hung `cargo test`/network probe precisely. Sensible defaults for
+    // long-running network commands belong at the caller, not a silent override.
     let output_result = if let Some(timeout_ms) = input.timeout {
-        let timeout_ms = timeout_ms.max(30_000);
         match timeout(Duration::from_millis(timeout_ms), command.output()).await {
             Ok(result) => (result?, false),
-            Err(_) => {
-                return Ok(BashCommandOutput {
-                    stdout: String::new(),
-                    stderr: format!("Command exceeded timeout of {timeout_ms} ms"),
-                    raw_output_path: None,
-                    interrupted: true,
-                    is_image: None,
-                    background_task_id: None,
-                    backgrounded_by_user: None,
-                    assistant_auto_backgrounded: None,
-                    dangerously_disable_sandbox: input.dangerously_disable_sandbox,
-                    return_code_interpretation: Some(String::from("timeout")),
-                    no_output_expected: Some(true),
-                    structured_content: None,
-                    persisted_output_path: None,
-                    persisted_output_size: None,
-                    sandbox_status: Some(sandbox_status),
-                });
-            }
+            // On timeout, classify the failure (a hung `cargo test`/`pytest`
+            // reads differently from a slow network command) and emit structured
+            // provenance instead of a bare "timeout" string.
+            Err(_) => return Ok(timeout_output(&input, timeout_ms, sandbox_status)),
         }
     } else {
         (command.output().await?, false)

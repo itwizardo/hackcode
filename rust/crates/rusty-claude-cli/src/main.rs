@@ -112,7 +112,31 @@ type RuntimePluginStateBuildOutput = (
     Vec<RuntimeToolDefinition>,
 );
 
+/// Install a global SIGINT (Ctrl+C) handler so Ctrl+C reliably aborts the
+/// in-flight turn across every entry path (REPL + headless), independent of
+/// which tokio runtime is active. The per-runtime `tokio::signal::ctrl_c()`
+/// approach is unreliable when multiple runtimes exist.
+///
+/// Implemented with `signal-hook` (no `unsafe` in this crate — the workspace
+/// forbids it) which registers via `signal-hook-registry`, the same registry
+/// tokio's own SIGINT listener chains through, so both stay in the handler
+/// chain. Two-stage behavior:
+///   1. First press → sets `TURN_ABORT`; the turn loop polls it and unwinds
+///      cleanly back to the prompt.
+///   2. Second press while the flag is still set (turn hasn't returned yet) →
+///      `register_conditional_shutdown` terminates the process with code 130.
+///
+/// `register_conditional_shutdown` is registered first so it observes the flag
+/// *before* the setter flips it on the same signal: on the first press it sees
+/// `false` and does nothing, on a later press it sees `true` and shuts down.
+fn install_global_interrupt_handler() {
+    use signal_hook::consts::SIGINT;
+    let _ = signal_hook::flag::register_conditional_shutdown(SIGINT, 130, TURN_ABORT.clone());
+    let _ = signal_hook::flag::register(SIGINT, TURN_ABORT.clone());
+}
+
 fn main() {
+    install_global_interrupt_handler();
     if let Err(error) = run() {
         let message = error.to_string();
         // When --output-format json is active, emit errors as JSON so downstream
@@ -1446,7 +1470,7 @@ fn validate_model_syntax(model: &str) -> Result<(), String> {
     if parts.len() < 2 || parts.iter().any(|p| p.is_empty()) {
         // #154: hint if the model looks like it belongs to a different provider
         let mut err_msg = format!(
-            "invalid model syntax: '{}'. Expected provider/model (e.g., anthropic/claude-opus-4-6) or known alias (opus, sonnet, haiku)",
+            "invalid model syntax: '{}'. Expected provider/model (e.g., anthropic/claude-opus-4-8) or known alias (opus, sonnet, haiku)",
             trimmed
         );
         if trimmed.starts_with("gpt-") || trimmed.starts_with("gpt_") {
@@ -1564,6 +1588,7 @@ fn ensure_hackcode_ready() -> Result<(), Box<dyn std::error::Error>> {
         || env::var("OPENAI_API_KEY").is_ok()
         || env::var("ANTHROPIC_BASE_URL").is_ok()
         || env::var("ANTHROPIC_AUTH_TOKEN").is_ok()
+        || env::var("ANTHROPIC_API_KEY").is_ok()
     {
         return Ok(());
     }
@@ -3989,7 +4014,7 @@ fn run_resume_command(
             Ok(ResumeCommandOutcome {
                 session: cleared,
                 message: Some(format!(
-                    "Session cleared\n  Mode             resumed session reset\n  Previous session {previous_session_id}\n  Backup           {}\n  Resume previous  hackcode--resume {}\n  New session      {new_session_id}\n  Session file     {}",
+                    "Session cleared\n  Mode             resumed session reset\n  Previous session {previous_session_id}\n  Backup           {}\n  Resume previous  hackcode --resume {}\n  New session      {new_session_id}\n  Session file     {}",
                     backup_path.display(),
                     backup_path.display(),
                     session_path.display()
@@ -4924,6 +4949,28 @@ fn mcp_annotation_flag(tool: &McpTool, key: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Set when the user presses Ctrl+C during a turn. `consume_stream` polls this
+/// and aborts the in-flight request so the REPL drops back to the prompt
+/// instead of running to completion. Reset at the start of every turn.
+///
+/// An `Arc<AtomicBool>` (behind `LazyLock`) rather than a bare `static` so it can
+/// be handed to `signal_hook::flag::register*` — those take ownership of an
+/// `Arc`. All the `.load`/`.store`/`.swap` call sites resolve through `Deref`
+/// (`LazyLock` → `Arc` → `AtomicBool`) and need no changes.
+static TURN_ABORT: std::sync::LazyLock<std::sync::Arc<std::sync::atomic::AtomicBool>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+
+/// True if the current turn was interrupted by the user (used to render a clean
+/// "Interrupted" line instead of treating it as a fatal error).
+pub fn turn_abort_requested() -> bool {
+    TURN_ABORT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Clear the interrupt flag — call at the start of each turn.
+fn reset_turn_abort() {
+    TURN_ABORT.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
 struct HookAbortMonitor {
     stop_tx: Option<Sender<()>>,
     join_handle: Option<JoinHandle<()>>,
@@ -4948,6 +4995,8 @@ impl HookAbortMonitor {
                     result = tokio::signal::ctrl_c() => {
                         if result.is_ok() {
                             abort_signal.abort();
+                            // Also abort the in-flight model request/turn.
+                            TURN_ABORT.store(true, std::sync::atomic::Ordering::SeqCst);
                         }
                     }
                     _ = wait_for_stop => {}
@@ -5053,7 +5102,7 @@ impl LiveCli {
   \x1b[2mDirectory\x1b[0m        {}\n\
   \x1b[2mSession\x1b[0m          {}\n\
   \x1b[2mAuto-save\x1b[0m        {}\n\n\
-  Type \x1b[1m/help\x1b[0m for commands · \x1b[1m/tools\x1b[0m for security tools · \x1b[2mTab\x1b[0m for completions · \x1b[2mShift+Enter\x1b[0m for newline",
+  Type \x1b[1m/help\x1b[0m for commands · \x1b[1m/tools\x1b[0m for security tools · \x1b[2mTab\x1b[0m for workflow completions · \x1b[2mShift+Enter\x1b[0m for newline",
             self.model,
             self.permission_mode.as_str(),
             git_branch,
@@ -5105,6 +5154,7 @@ impl LiveCli {
 
     fn run_turn(&mut self, input: &str) -> Result<(), Box<dyn std::error::Error>> {
         let turn_start = std::time::Instant::now();
+        reset_turn_abort();
         let (mut runtime, hook_abort_monitor) = self.prepare_turn_runtime(true)?;
         let mut spinner = Spinner::new();
         let mut stdout = io::stdout();
@@ -5171,6 +5221,14 @@ impl LiveCli {
             }
             Err(error) => {
                 runtime.shutdown_plugins()?;
+                if turn_abort_requested() {
+                    // User pressed Ctrl+C: stop the animation, print a clean
+                    // interrupt line, and discard the turn (drop the local
+                    // runtime so the session is unchanged) — the REPL continues.
+                    Spinner::stop_global();
+                    println!("\x1b[2m  ⎿ Interrupted\x1b[0m\n");
+                    return Ok(());
+                }
                 spinner.fail(
                     &random_fail_message(),
                     TerminalRenderer::new().color_theme(),
@@ -6916,22 +6974,22 @@ fn sandbox_json_value(status: &runtime::SandboxStatus) -> serde_json::Value {
 fn render_help_topic(topic: LocalHelpTopic) -> String {
     match topic {
         LocalHelpTopic::Status => "Status
-  Usage            hackcodestatus
+  Usage            hackcode status
   Purpose          show the local workspace snapshot without entering the REPL
   Output           model, permissions, git state, config files, and sandbox status
-  Related          /status · hackcode--resume latest /status"
+  Related          /status · hackcode --resume latest /status"
             .to_string(),
         LocalHelpTopic::Sandbox => "Sandbox
-  Usage            hackcodesandbox
+  Usage            hackcode sandbox
   Purpose          inspect the resolved sandbox and isolation state for the current directory
   Output           namespace, network, filesystem, and fallback details
-  Related          /sandbox · hackcodestatus"
+  Related          /sandbox · hackcode status"
             .to_string(),
         LocalHelpTopic::Doctor => "Doctor
-  Usage            hackcodedoctor
+  Usage            hackcode doctor
   Purpose          diagnose local auth, config, workspace, sandbox, and build metadata
   Output           local-only health report; no provider request or session resume required
-  Related          /doctor · hackcode--resume latest /doctor"
+  Related          /doctor · hackcode --resume latest /doctor"
             .to_string(),
         LocalHelpTopic::Acp => "ACP / Zed
   Usage            claw acp [serve] [--output-format <format>]
@@ -8846,6 +8904,11 @@ impl AnthropicRuntimeClient {
         let mut received_any_event = false;
 
         loop {
+            // User pressed Ctrl+C — stop the in-flight request between events so
+            // the REPL returns to the prompt instead of running to completion.
+            if TURN_ABORT.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(RuntimeError::new("interrupted by user"));
+            }
             let next = if apply_stall_timeout && !received_any_event {
                 match tokio::time::timeout(POST_TOOL_STALL_TIMEOUT, stream.next_event()).await {
                     Ok(inner) => inner.map_err(|error| {
@@ -9086,7 +9149,7 @@ fn format_context_window_blocked_error(session_id: &str, error: &api::ApiError) 
     lines.push("Recovery".to_string());
     lines.push("  Compact          /compact".to_string());
     lines.push(format!(
-        "  Resume compact   hackcode--resume {session_id} /compact"
+        "  Resume compact   hackcode --resume {session_id} /compact"
     ));
     lines.push("  Fresh session    /clear --confirm".to_string());
     lines.push(
@@ -10131,55 +10194,55 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "Usage:")?;
     writeln!(
         out,
-        "  hackcode[--model MODEL] [--allowedTools TOOL[,TOOL...]]"
+        "  hackcode [--model MODEL] [--allowedTools TOOL[,TOOL...]]"
     )?;
     writeln!(out, "      Start the interactive REPL")?;
     writeln!(
         out,
-        "  hackcode[--model MODEL] [--output-format text|json] prompt TEXT"
+        "  hackcode [--model MODEL] [--output-format text|json] prompt TEXT"
     )?;
     writeln!(out, "      Send one prompt and exit")?;
     writeln!(
         out,
-        "  hackcode[--model MODEL] [--output-format text|json] TEXT"
+        "  hackcode [--model MODEL] [--output-format text|json] TEXT"
     )?;
     writeln!(out, "      Shorthand non-interactive prompt mode")?;
     writeln!(
         out,
-        "  hackcode--resume [SESSION.jsonl|session-id|latest] [/status] [/compact] [...]"
+        "  hackcode --resume [SESSION.jsonl|session-id|latest] [/status] [/compact] [...]"
     )?;
     writeln!(
         out,
         "      Inspect or maintain a saved session without entering the REPL"
     )?;
-    writeln!(out, "  hackcodehelp")?;
+    writeln!(out, "  hackcode help")?;
     writeln!(out, "      Alias for --help")?;
-    writeln!(out, "  hackcodeversion")?;
+    writeln!(out, "  hackcode version")?;
     writeln!(out, "      Alias for --version")?;
-    writeln!(out, "  hackcodestatus")?;
+    writeln!(out, "  hackcode status")?;
     writeln!(
         out,
         "      Show the current local workspace status snapshot"
     )?;
-    writeln!(out, "  hackcodesandbox")?;
+    writeln!(out, "  hackcode sandbox")?;
     writeln!(out, "      Show the current sandbox isolation snapshot")?;
-    writeln!(out, "  hackcodedoctor")?;
+    writeln!(out, "  hackcode doctor")?;
     writeln!(
         out,
         "      Diagnose local auth, config, workspace, and sandbox health"
     )?;
-    writeln!(out, "  hackcodedump-manifests")?;
-    writeln!(out, "  hackcodebootstrap-plan")?;
-    writeln!(out, "  hackcodeagents")?;
-    writeln!(out, "  hackcodemcp")?;
-    writeln!(out, "  hackcodeskills")?;
-    writeln!(out, "  hackcodesystem-prompt [--cwd PATH] [--date YYYY-MM-DD]")?;
-    writeln!(out, "  hackcodelogin")?;
-    writeln!(out, "  hackcodelogout")?;
-    writeln!(out, "  hackcodeinit")?;
+    writeln!(out, "  hackcode dump-manifests")?;
+    writeln!(out, "  hackcode bootstrap-plan")?;
+    writeln!(out, "  hackcode agents")?;
+    writeln!(out, "  hackcode mcp")?;
+    writeln!(out, "  hackcode skills")?;
+    writeln!(out, "  hackcode system-prompt [--cwd PATH] [--date YYYY-MM-DD]")?;
+    writeln!(out, "  hackcode login")?;
+    writeln!(out, "  hackcode logout")?;
+    writeln!(out, "  hackcode init")?;
     writeln!(
         out,
-        "  hackcodeexport [PATH] [--session SESSION] [--output PATH]"
+        "  hackcode export [PATH] [--session SESSION] [--output PATH]"
     )?;
     writeln!(
         out,
@@ -10241,29 +10304,29 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
         "  Use /session list in the REPL to browse managed sessions"
     )?;
     writeln!(out, "Examples:")?;
-    writeln!(out, "  hackcode--model claude-opus \"summarize this repo\"")?;
+    writeln!(out, "  hackcode --model claude-opus \"summarize this repo\"")?;
     writeln!(
         out,
-        "  hackcode--output-format json prompt \"explain src/main.rs\""
+        "  hackcode --output-format json prompt \"explain src/main.rs\""
     )?;
-    writeln!(out, "  hackcode--compact \"summarize Cargo.toml\" | wc -l")?;
+    writeln!(out, "  hackcode --compact \"summarize Cargo.toml\" | wc -l")?;
     writeln!(
         out,
-        "  hackcode--allowedTools read,glob \"summarize Cargo.toml\""
+        "  hackcode --allowedTools read,glob \"summarize Cargo.toml\""
     )?;
-    writeln!(out, "  hackcode--resume {LATEST_SESSION_REFERENCE}")?;
+    writeln!(out, "  hackcode --resume {LATEST_SESSION_REFERENCE}")?;
     writeln!(
         out,
-        "  hackcode--resume {LATEST_SESSION_REFERENCE} /status /diff /export notes.txt"
+        "  hackcode --resume {LATEST_SESSION_REFERENCE} /status /diff /export notes.txt"
     )?;
-    writeln!(out, "  hackcodeagents")?;
-    writeln!(out, "  hackcodemcp show my-server")?;
-    writeln!(out, "  hackcode/skills")?;
-    writeln!(out, "  hackcodedoctor")?;
-    writeln!(out, "  hackcodelogin")?;
-    writeln!(out, "  hackcodeinit")?;
-    writeln!(out, "  hackcodeexport")?;
-    writeln!(out, "  hackcodeexport conversation.md")?;
+    writeln!(out, "  hackcode agents")?;
+    writeln!(out, "  hackcode mcp show my-server")?;
+    writeln!(out, "  hackcode /skills")?;
+    writeln!(out, "  hackcode doctor")?;
+    writeln!(out, "  hackcode login")?;
+    writeln!(out, "  hackcode init")?;
+    writeln!(out, "  hackcode export")?;
+    writeln!(out, "  hackcode export conversation.md")?;
     Ok(())
 }
 
@@ -10432,7 +10495,7 @@ mod tests {
         );
         assert!(rendered.contains("Compact          /compact"), "{rendered}");
         assert!(
-            rendered.contains("Resume compact   hackcode--resume session-issue-32 /compact"),
+            rendered.contains("Resume compact   hackcode --resume session-issue-32 /compact"),
             "{rendered}"
         );
         assert!(
@@ -10540,7 +10603,7 @@ mod tests {
         );
         assert!(rendered.contains("Compact          /compact"), "{rendered}");
         assert!(
-            rendered.contains("Resume compact   hackcode--resume session-issue-32 /compact"),
+            rendered.contains("Resume compact   hackcode --resume session-issue-32 /compact"),
             "{rendered}"
         );
     }
@@ -10873,7 +10936,7 @@ mod tests {
             parse_args(&args).expect("args should parse"),
             CliAction::Prompt {
                 prompt: "explain this".to_string(),
-                model: "claude-opus-4-6".to_string(),
+                model: "claude-opus-4-8".to_string(),
                 output_format: CliOutputFormat::Json,
                 allowed_tools: None,
                 permission_mode: PermissionMode::DangerFullAccess,
@@ -10947,7 +11010,7 @@ mod tests {
             parse_args(&args).expect("args should parse"),
             CliAction::Prompt {
                 prompt: "explain this".to_string(),
-                model: "claude-opus-4-6".to_string(),
+                model: "claude-opus-4-8".to_string(),
                 output_format: CliOutputFormat::Text,
                 allowed_tools: None,
                 permission_mode: PermissionMode::DangerFullAccess,
@@ -10961,9 +11024,9 @@ mod tests {
 
     #[test]
     fn resolves_known_model_aliases() {
-        assert_eq!(resolve_model_alias("opus"), "claude-opus-4-6");
+        assert_eq!(resolve_model_alias("opus"), "claude-opus-4-8");
         assert_eq!(resolve_model_alias("sonnet"), "claude-sonnet-4-6");
-        assert_eq!(resolve_model_alias("haiku"), "claude-haiku-4-5-20251213");
+        assert_eq!(resolve_model_alias("haiku"), "claude-haiku-4-5");
         assert_eq!(resolve_model_alias("claude-opus"), "claude-opus");
     }
 
@@ -11000,10 +11063,10 @@ mod tests {
 
         // then
         assert_eq!(direct, "claude-haiku-4-5-20251213");
-        assert_eq!(chained, "claude-opus-4-6");
+        assert_eq!(chained, "claude-opus-4-8");
         assert_eq!(cross_provider, "grok-3-mini");
         assert_eq!(unknown, "unknown-model");
-        assert_eq!(builtin, "claude-haiku-4-5-20251213");
+        assert_eq!(builtin, "claude-haiku-4-5");
     }
 
     #[test]
@@ -11618,7 +11681,7 @@ mod tests {
         std::fs::create_dir_all(&cwd).expect("project dir should exist");
         // One valid server + one malformed entry missing `command`.
         std::fs::write(
-            cwd.join(".claw.json"),
+            cwd.join(".hackcode.json"),
             r#"{
   "mcpServers": {
     "everything": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-everything"]},
@@ -11627,7 +11690,7 @@ mod tests {
 }
 "#,
         )
-        .expect("write malformed .claw.json");
+        .expect("write malformed .hackcode.json");
 
         let context = with_current_dir(&cwd, || {
             super::status_context(None)
@@ -12277,7 +12340,7 @@ mod tests {
             .expect("prompt shorthand should still work"),
             CliAction::Prompt {
                 prompt: "please debug this".to_string(),
-                model: "claude-opus-4-6".to_string(),
+                model: "claude-opus-4-8".to_string(),
                 output_format: CliOutputFormat::Text,
                 allowed_tools: None,
                 permission_mode: crate::default_permission_mode(),
@@ -13289,7 +13352,7 @@ mod tests {
         git(&["config", "user.email", "tests@example.com"], &workspace);
         git(&["config", "user.name", "Rusty Claude Tests"], &workspace);
         fs::write(workspace.join("tracked.txt"), "hello\n").expect("write tracked");
-        fs::write(workspace.join(".claw.json"), r#"{"trustedRoots": ["."]}"#)
+        fs::write(workspace.join(".hackcode.json"), r#"{"trustedRoots": ["."]}"#)
             .expect("write config");
         git(&["add", "tracked.txt"], &workspace);
         git(&["commit", "-m", "init", "--quiet"], &workspace);

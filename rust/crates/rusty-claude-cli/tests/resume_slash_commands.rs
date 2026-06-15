@@ -56,7 +56,7 @@ fn resumed_binary_accepts_slash_commands_with_arguments() {
     assert!(stdout.contains("Session cleared"));
     assert!(stdout.contains("Mode             resumed session reset"));
     assert!(stdout.contains("Previous session"));
-    assert!(stdout.contains("Resume previous  claw --resume"));
+    assert!(stdout.contains("Resume previous  hackcode --resume"));
     assert!(stdout.contains("Backup           "));
     assert!(stdout.contains("Session file     "));
 
@@ -117,8 +117,8 @@ fn resumed_config_command_loads_settings_files_end_to_end() {
     // given
     let temp_dir = unique_temp_dir("resume-config");
     let project_dir = temp_dir.join("project");
-    let config_home = temp_dir.join("home").join(".claw");
-    fs::create_dir_all(project_dir.join(".claw")).expect("project config dir should exist");
+    let config_home = temp_dir.join("home").join(".hackcode");
+    fs::create_dir_all(project_dir.join(".hackcode")).expect("project config dir should exist");
     fs::create_dir_all(&config_home).expect("config home should exist");
 
     let session_path = project_dir.join("session.jsonl");
@@ -130,7 +130,7 @@ fn resumed_config_command_loads_settings_files_end_to_end() {
     fs::write(config_home.join("settings.json"), r#"{"model":"haiku"}"#)
         .expect("user config should write");
     fs::write(
-        project_dir.join(".claw").join("settings.local.json"),
+        project_dir.join(".hackcode").join("settings.local.json"),
         r#"{"model":"opus"}"#,
     )
     .expect("local config should write");
@@ -144,7 +144,7 @@ fn resumed_config_command_loads_settings_files_end_to_end() {
             "/config",
             "model",
         ],
-        &[("CLAW_CONFIG_HOME", config_home.to_str().expect("utf8 path"))],
+        &[("HACKCODE_CONFIG_HOME", config_home.to_str().expect("utf8 path"))],
     );
 
     // then
@@ -166,7 +166,7 @@ fn resumed_config_command_loads_settings_files_end_to_end() {
     ));
     assert!(stdout.contains(
         project_dir
-            .join(".claw")
+            .join(".hackcode")
             .join("settings.local.json")
             .to_str()
             .expect("utf8 path")
@@ -240,7 +240,7 @@ fn resumed_status_command_emits_structured_json_when_requested() {
         .expect("session should persist");
 
     // when
-    // Use an isolated CLAW_CONFIG_HOME so ~/.claw/settings.json is not loaded,
+    // Use an isolated HACKCODE_CONFIG_HOME so ~/.hackcode/settings.json is not loaded,
     // which would cause loaded_config_files to be non-zero (#65).
     let output = run_claw_with_env(
         &temp_dir,
@@ -251,7 +251,7 @@ fn resumed_status_command_emits_structured_json_when_requested() {
             session_path.to_str().expect("utf8 path"),
             "/status",
         ],
-        &[("CLAW_CONFIG_HOME", config_home.to_str().expect("utf8 path"))],
+        &[("HACKCODE_CONFIG_HOME", config_home.to_str().expect("utf8 path"))],
     );
 
     // then

@@ -314,7 +314,7 @@ fn run_case(case: ScenarioCase, workspace: &HarnessWorkspace, base_url: &str) ->
         .env_clear()
         .env("ANTHROPIC_API_KEY", "test-parity-key")
         .env("ANTHROPIC_BASE_URL", base_url)
-        .env("CLAW_CONFIG_HOME", &workspace.config_home)
+        .env("HACKCODE_CONFIG_HOME", &workspace.config_home)
         .env("HOME", &workspace.home)
         .env("NO_COLOR", "1")
         .env("PATH", "/usr/bin:/bin")
@@ -367,7 +367,7 @@ fn run_case(case: ScenarioCase, workspace: &HarnessWorkspace, base_url: &str) ->
 
 #[allow(dead_code)]
 fn prepare_auto_compact_fixture(workspace: &HarnessWorkspace) {
-    let sessions_dir = workspace.root.join(".claw").join("sessions");
+    let sessions_dir = workspace.root.join(".hackcode").join("sessions");
     fs::create_dir_all(&sessions_dir).expect("sessions dir should exist");
 
     // Write a pre-seeded session with 6 messages so auto-compact can remove them

@@ -173,7 +173,7 @@ fn text_prompt_mode_prints_final_assistant_text_after_spinner() {
         "text prompt stdout should include the assistant text ({stdout:?})"
     );
     assert!(
-        plain_stdout.contains("✔ ✨ Done"),
+        plain_stdout.contains("✔ "),
         "text prompt stdout should still include spinner completion ({stdout:?})"
     );
     assert!(
@@ -256,7 +256,7 @@ fn run_claw(
         .env_clear()
         .env("ANTHROPIC_API_KEY", "test-compact-key")
         .env("ANTHROPIC_BASE_URL", base_url)
-        .env("CLAW_CONFIG_HOME", config_home)
+        .env("HACKCODE_CONFIG_HOME", config_home)
         .env("HOME", home)
         .env("NO_COLOR", "1")
         .env("PATH", "/usr/bin:/bin")

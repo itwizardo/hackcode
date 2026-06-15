@@ -1773,7 +1773,7 @@ mod tests {
         ];
 
         // when
-        let (message, _, _) = build_assistant_message(events)
+        let (message, _, _, _) = build_assistant_message(events)
             .expect("assistant message should preserve thinking, text, and tool blocks");
 
         // then

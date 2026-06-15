@@ -223,7 +223,7 @@ impl Spinner {
                     Print(format!("{glyph} {msg}… ")),
                     ResetColor,
                     SetForegroundColor(Color::DarkGrey),
-                    Print(format!("({secs}s)")),
+                    Print(format!("({secs}s · ctrl-c to stop)")),
                     ResetColor,
                 );
                 let _ = stdout.flush();
@@ -1322,18 +1322,32 @@ mod tests {
     }
 
     #[test]
-    fn spinner_advances_frames() {
+    fn spinner_activates_and_stops() {
+        use std::sync::atomic::Ordering;
+
+        // The redesigned spinner is a fire-and-forget background animation: `tick`
+        // ignores its label and renders rotating status messages on its own thread
+        // rather than writing frames into `out`. The observable contract is the
+        // activation flag, which streaming/finish/fail flip off via `stop_global`.
         let terminal_renderer = TerminalRenderer::new();
         let mut spinner = Spinner::new();
         let mut out = Vec::new();
-        spinner
-            .tick("Working", terminal_renderer.color_theme(), &mut out)
-            .expect("tick succeeds");
-        spinner
-            .tick("Working", terminal_renderer.color_theme(), &mut out)
-            .expect("tick succeeds");
 
-        let output = String::from_utf8_lossy(&out);
-        assert!(output.contains("Working"));
+        spinner
+            .tick("Working", terminal_renderer.color_theme(), &mut out)
+            .expect("tick succeeds");
+        assert!(
+            super::SPINNER_ACTIVE.load(Ordering::SeqCst),
+            "tick should mark the spinner active"
+        );
+
+        assert!(
+            Spinner::stop_global(),
+            "stop_global should report the spinner was running"
+        );
+        assert!(
+            !super::SPINNER_ACTIVE.load(Ordering::SeqCst),
+            "spinner should be inactive after stop_global"
+        );
     }
 }

@@ -890,7 +890,7 @@ mod tests {
         let workspace_b = fs::canonicalize(&workspace_b).unwrap_or(workspace_b);
 
         let store_b = SessionStore::from_cwd(&workspace_b).expect("store b should build");
-        let legacy_root = workspace_b.join(".claw").join("sessions");
+        let legacy_root = workspace_b.join(".hackcode").join("sessions");
         fs::create_dir_all(&legacy_root).expect("legacy root should exist");
         let legacy_path = legacy_root.join("legacy-cross.jsonl");
         let session = Session::new()
@@ -924,7 +924,7 @@ mod tests {
         // #151: canonicalize for path-representation consistency with store.
         let base = fs::canonicalize(&base).unwrap_or(base);
         let store = SessionStore::from_cwd(&base).expect("store should build");
-        let legacy_root = base.join(".claw").join("sessions");
+        let legacy_root = base.join(".hackcode").join("sessions");
         let legacy_path = legacy_root.join("legacy-safe.jsonl");
         fs::create_dir_all(&legacy_root).expect("legacy root should exist");
         let session = Session::new()
@@ -954,7 +954,7 @@ mod tests {
         // #151: canonicalize for path-representation consistency with store.
         let base = fs::canonicalize(&base).unwrap_or(base);
         let store = SessionStore::from_cwd(&base).expect("store should build");
-        let legacy_root = base.join(".claw").join("sessions");
+        let legacy_root = base.join(".hackcode").join("sessions");
         let legacy_path = legacy_root.join("legacy-unbound.json");
         fs::create_dir_all(&legacy_root).expect("legacy root should exist");
         let session = Session::new().with_persistence_path(legacy_path.clone());
