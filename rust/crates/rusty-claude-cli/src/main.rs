@@ -1400,9 +1400,10 @@ fn levenshtein_distance(left: &str, right: &str) -> usize {
 
 fn resolve_model_alias(model: &str) -> &str {
     match model {
-        "opus" => "claude-opus-4-6",
+        "opus" => "claude-opus-4-8",
         "sonnet" => "claude-sonnet-4-6",
-        "haiku" => "claude-haiku-4-5-20251213",
+        "haiku" => "claude-haiku-4-5",
+        "fable" => "claude-fable-5",
         _ => model,
     }
 }
@@ -1428,7 +1429,7 @@ fn validate_model_syntax(model: &str) -> Result<(), String> {
     }
     // Known aliases are always valid
     match trimmed {
-        "opus" | "sonnet" | "haiku" => return Ok(()),
+        "opus" | "sonnet" | "haiku" | "fable" => return Ok(()),
         _ => {}
     }
     // Check for spaces (malformed)
@@ -1438,9 +1439,11 @@ fn validate_model_syntax(model: &str) -> Result<(), String> {
             trimmed
         ));
     }
-    // Check provider/model format: provider_id/model_id
+    // Check provider/model format: provider_id/model_id[/sub_id...].
+    // Multi-segment ids are allowed so vendor-namespaced models route correctly
+    // (e.g. nim/meta/llama-3.3-70b-instruct → NIM wire id meta/llama-3.3-70b-instruct).
     let parts: Vec<&str> = trimmed.split('/').collect();
-    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+    if parts.len() < 2 || parts.iter().any(|p| p.is_empty()) {
         // #154: hint if the model looks like it belongs to a different provider
         let mut err_msg = format!(
             "invalid model syntax: '{}'. Expected provider/model (e.g., anthropic/claude-opus-4-6) or known alias (opus, sonnet, haiku)",

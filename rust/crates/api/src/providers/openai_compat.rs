@@ -20,6 +20,8 @@ pub const DEFAULT_XAI_BASE_URL: &str = "https://api.x.ai/v1";
 pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_DASHSCOPE_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
+pub const DEFAULT_OPENCODE_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
+pub const DEFAULT_NIM_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 const REQUEST_ID_HEADER: &str = "request-id";
 const ALT_REQUEST_ID_HEADER: &str = "x-request-id";
 const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
@@ -43,6 +45,8 @@ const XAI_ENV_VARS: &[&str] = &["XAI_API_KEY"];
 const OPENAI_ENV_VARS: &[&str] = &["OPENAI_API_KEY"];
 const DASHSCOPE_ENV_VARS: &[&str] = &["DASHSCOPE_API_KEY"];
 const OLLAMA_ENV_VARS: &[&str] = &["OLLAMA_API_KEY"];
+const OPENCODE_ENV_VARS: &[&str] = &["OPENCODE_API_KEY"];
+const NIM_ENV_VARS: &[&str] = &["NIM_API_KEY"];
 
 // Provider-specific request body size limits in bytes
 const XAI_MAX_REQUEST_BODY_BYTES: usize = 52_428_800; // 50MB
@@ -101,6 +105,33 @@ impl OpenAiCompatConfig {
         }
     }
 
+    /// opencode "Zen" gateway (`https://opencode.ai/zen/go/v1`) — OpenAI-compatible,
+    /// serves models like minimax-m3, deepseek-v4-pro, fable-5-go, glm-5.1.
+    /// Key comes from the opencode auth store, exported as OPENCODE_API_KEY.
+    #[must_use]
+    pub const fn opencode() -> Self {
+        Self {
+            provider_name: "opencode-go",
+            api_key_env: "OPENCODE_API_KEY",
+            base_url_env: "OPENCODE_BASE_URL",
+            default_base_url: DEFAULT_OPENCODE_BASE_URL,
+            max_request_body_bytes: OPENAI_MAX_REQUEST_BODY_BYTES,
+        }
+    }
+
+    /// NVIDIA NIM (`https://integrate.api.nvidia.com/v1`) — OpenAI-compatible,
+    /// free quota. Serves vendor/model ids (deepseek-ai/deepseek-r1, etc.).
+    #[must_use]
+    pub const fn nim() -> Self {
+        Self {
+            provider_name: "NVIDIA-NIM",
+            api_key_env: "NIM_API_KEY",
+            base_url_env: "NIM_BASE_URL",
+            default_base_url: DEFAULT_NIM_BASE_URL,
+            max_request_body_bytes: OPENAI_MAX_REQUEST_BODY_BYTES,
+        }
+    }
+
     #[must_use]
     pub fn credential_env_vars(self) -> &'static [&'static str] {
         match self.provider_name {
@@ -108,6 +139,8 @@ impl OpenAiCompatConfig {
             "OpenAI" => OPENAI_ENV_VARS,
             "DashScope" => DASHSCOPE_ENV_VARS,
             "Ollama" => OLLAMA_ENV_VARS,
+            "opencode-go" => OPENCODE_ENV_VARS,
+            "NVIDIA-NIM" => NIM_ENV_VARS,
             _ => &[],
         }
     }
@@ -897,7 +930,7 @@ fn strip_routing_prefix(model: &str) -> &str {
         let prefix = &model[..pos];
         // Only strip if the prefix before "/" is a known routing prefix,
         // not if "/" appears in the middle of the model name for other reasons.
-        if matches!(prefix, "openai" | "xai" | "grok" | "qwen" | "kimi") {
+        if matches!(prefix, "openai" | "xai" | "grok" | "qwen" | "kimi" | "opencode" | "nim") {
             &model[pos + 1..]
         } else {
             model

@@ -40,6 +40,10 @@ impl ProviderClient {
                     Some(meta) if meta.auth_env == "DASHSCOPE_API_KEY" => {
                         OpenAiCompatConfig::dashscope()
                     }
+                    Some(meta) if meta.auth_env == "OPENCODE_API_KEY" => {
+                        OpenAiCompatConfig::opencode()
+                    }
+                    Some(meta) if meta.auth_env == "NIM_API_KEY" => OpenAiCompatConfig::nim(),
                     _ => OpenAiCompatConfig::openai(),
                 };
                 Ok(Self::OpenAi(OpenAiCompatClient::from_env(config)?))

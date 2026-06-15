@@ -79,6 +79,15 @@ const MODEL_REGISTRY: &[(&str, ProviderMetadata)] = &[
         },
     ),
     (
+        "fable",
+        ProviderMetadata {
+            provider: ProviderKind::Anthropic,
+            auth_env: "ANTHROPIC_API_KEY",
+            base_url_env: "ANTHROPIC_BASE_URL",
+            default_base_url: anthropic::DEFAULT_BASE_URL,
+        },
+    ),
+    (
         "grok",
         ProviderMetadata {
             provider: ProviderKind::Xai,
@@ -143,9 +152,10 @@ pub fn resolve_model_alias(model: &str) -> String {
         .find_map(|(alias, metadata)| {
             (*alias == lower).then_some(match metadata.provider {
                 ProviderKind::Anthropic => match *alias {
-                    "opus" => "claude-opus-4-6",
+                    "opus" => "claude-opus-4-8",
                     "sonnet" => "claude-sonnet-4-6",
-                    "haiku" => "claude-haiku-4-5-20251213",
+                    "haiku" => "claude-haiku-4-5",
+                    "fable" => "claude-fable-5",
                     _ => trimmed,
                 },
                 ProviderKind::Xai => match *alias {
@@ -202,6 +212,28 @@ pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
             auth_env: "DASHSCOPE_API_KEY",
             base_url_env: "DASHSCOPE_BASE_URL",
             default_base_url: openai_compat::DEFAULT_DASHSCOPE_BASE_URL,
+        });
+    }
+    // opencode "Zen" gateway — OpenAI-compatible, free models (minimax-m3,
+    // deepseek-v4-pro, fable-5-go, glm-5.1, …). Routed via the `opencode/` prefix;
+    // the bare model id is sent on the wire. Key in OPENCODE_API_KEY.
+    if canonical.starts_with("opencode/") {
+        return Some(ProviderMetadata {
+            provider: ProviderKind::OpenAi,
+            auth_env: "OPENCODE_API_KEY",
+            base_url_env: "OPENCODE_BASE_URL",
+            default_base_url: openai_compat::DEFAULT_OPENCODE_BASE_URL,
+        });
+    }
+    // NVIDIA NIM — OpenAI-compatible, free quota. Routed via the `nim/` prefix;
+    // the vendor/model id after the prefix is sent on the wire
+    // (e.g. nim/deepseek-ai/deepseek-r1 → deepseek-ai/deepseek-r1). Key in NIM_API_KEY.
+    if canonical.starts_with("nim/") {
+        return Some(ProviderMetadata {
+            provider: ProviderKind::OpenAi,
+            auth_env: "NIM_API_KEY",
+            base_url_env: "NIM_BASE_URL",
+            default_base_url: openai_compat::DEFAULT_NIM_BASE_URL,
         });
     }
     // Ollama local models — HuggingFace models pulled via `ollama pull hf.co/...`
@@ -295,14 +327,24 @@ pub fn model_token_limit(model: &str) -> Option<ModelTokenLimit> {
     let canonical = resolve_model_alias(model);
     let base_model = canonical.rsplit('/').next().unwrap_or(canonical.as_str());
     match base_model {
+        "claude-opus-4-8" | "claude-fable-5" => Some(ModelTokenLimit {
+            max_output_tokens: 128_000,
+            context_window_tokens: 1_000_000,
+        }),
         "claude-opus-4-6" => Some(ModelTokenLimit {
             max_output_tokens: 32_000,
             context_window_tokens: 200_000,
         }),
-        "claude-sonnet-4-6" | "claude-haiku-4-5-20251213" => Some(ModelTokenLimit {
+        "claude-sonnet-4-6" => Some(ModelTokenLimit {
             max_output_tokens: 64_000,
-            context_window_tokens: 200_000,
+            context_window_tokens: 1_000_000,
         }),
+        "claude-haiku-4-5" | "claude-haiku-4-5-20251001" | "claude-haiku-4-5-20251213" => {
+            Some(ModelTokenLimit {
+                max_output_tokens: 64_000,
+                context_window_tokens: 200_000,
+            })
+        }
         "grok-3" | "grok-3-mini" => Some(ModelTokenLimit {
             max_output_tokens: 64_000,
             context_window_tokens: 131_072,
