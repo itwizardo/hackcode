@@ -79,6 +79,15 @@ const MODEL_REGISTRY: &[(&str, ProviderMetadata)] = &[
         },
     ),
     (
+        "fable",
+        ProviderMetadata {
+            provider: ProviderKind::Anthropic,
+            auth_env: "ANTHROPIC_API_KEY",
+            base_url_env: "ANTHROPIC_BASE_URL",
+            default_base_url: anthropic::DEFAULT_BASE_URL,
+        },
+    ),
+    (
         "grok",
         ProviderMetadata {
             provider: ProviderKind::Xai,
@@ -143,9 +152,10 @@ pub fn resolve_model_alias(model: &str) -> String {
         .find_map(|(alias, metadata)| {
             (*alias == lower).then_some(match metadata.provider {
                 ProviderKind::Anthropic => match *alias {
-                    "opus" => "claude-opus-4-6",
+                    "opus" => "claude-opus-4-8",
                     "sonnet" => "claude-sonnet-4-6",
-                    "haiku" => "claude-haiku-4-5-20251213",
+                    "haiku" => "claude-haiku-4-5",
+                    "fable" => "claude-fable-5",
                     _ => trimmed,
                 },
                 ProviderKind::Xai => match *alias {
@@ -154,7 +164,13 @@ pub fn resolve_model_alias(model: &str) -> String {
                     "grok-2" => "grok-2",
                     _ => trimmed,
                 },
-                ProviderKind::OpenAi | ProviderKind::Ollama => trimmed,
+                ProviderKind::OpenAi => match *alias {
+                    // `kimi` is the friendly alias for Moonshot's current flagship
+                    // on DashScope; expand it to the canonical model id.
+                    "kimi" => "kimi-k2.5",
+                    _ => trimmed,
+                },
+                ProviderKind::Ollama => trimmed,
             })
         })
         .map_or_else(|| trimmed.to_string(), ToOwned::to_owned)
@@ -204,6 +220,39 @@ pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
             default_base_url: openai_compat::DEFAULT_DASHSCOPE_BASE_URL,
         });
     }
+    // Moonshot Kimi models (kimi-k2.5, kimi-k1.5, kimi/<id>) also speak the
+    // OpenAI-compat shape on DashScope. Matched before the Ollama colon-heuristic
+    // so a model id like `kimi-k2.5` is not misrouted to a local backend.
+    if canonical.starts_with("kimi/") || canonical.starts_with("kimi-") {
+        return Some(ProviderMetadata {
+            provider: ProviderKind::OpenAi,
+            auth_env: "DASHSCOPE_API_KEY",
+            base_url_env: "DASHSCOPE_BASE_URL",
+            default_base_url: openai_compat::DEFAULT_DASHSCOPE_BASE_URL,
+        });
+    }
+    // opencode "Zen" gateway — OpenAI-compatible, free models (minimax-m3,
+    // deepseek-v4-pro, fable-5-go, glm-5.1, …). Routed via the `opencode/` prefix;
+    // the bare model id is sent on the wire. Key in OPENCODE_API_KEY.
+    if canonical.starts_with("opencode/") {
+        return Some(ProviderMetadata {
+            provider: ProviderKind::OpenAi,
+            auth_env: "OPENCODE_API_KEY",
+            base_url_env: "OPENCODE_BASE_URL",
+            default_base_url: openai_compat::DEFAULT_OPENCODE_BASE_URL,
+        });
+    }
+    // NVIDIA NIM — OpenAI-compatible, free quota. Routed via the `nim/` prefix;
+    // the vendor/model id after the prefix is sent on the wire
+    // (e.g. nim/deepseek-ai/deepseek-r1 → deepseek-ai/deepseek-r1). Key in NIM_API_KEY.
+    if canonical.starts_with("nim/") {
+        return Some(ProviderMetadata {
+            provider: ProviderKind::OpenAi,
+            auth_env: "NIM_API_KEY",
+            base_url_env: "NIM_BASE_URL",
+            default_base_url: openai_compat::DEFAULT_NIM_BASE_URL,
+        });
+    }
     // Ollama local models — HuggingFace models pulled via `ollama pull hf.co/...`
     // and any model containing a colon (e.g. "llama3.2:1b", "gemma:7b")
     if canonical.starts_with("hf.co/")
@@ -229,6 +278,19 @@ pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
 #[must_use]
 pub fn detect_provider_kind(model: &str) -> ProviderKind {
     if let Some(metadata) = metadata_for_model(model) {
+        // An explicitly-configured OpenAI-compatible endpoint takes precedence
+        // over the local-Ollama *fallback heuristic* — model ids like
+        // "qwen2.5-coder:7b" only match Ollama by shape (a colon), so when the
+        // user has pointed OPENAI_BASE_URL at their own server, route there.
+        // Explicit provider metadata (anthropic/grok/dashscope/openai/...) is
+        // resolved before the Ollama branch in `metadata_for_model`, so this
+        // only ever reinterprets the heuristic fallback.
+        if metadata.provider == ProviderKind::Ollama
+            && std::env::var_os("OPENAI_BASE_URL").is_some()
+            && openai_compat::has_api_key("OPENAI_API_KEY")
+        {
+            return ProviderKind::OpenAi;
+        }
         return metadata.provider;
     }
     // When OPENAI_BASE_URL is set, the user explicitly configured an
@@ -257,7 +319,9 @@ pub fn detect_provider_kind(model: &str) -> ProviderKind {
 pub const fn model_family_identity_for_kind(kind: ProviderKind) -> runtime::ModelFamilyIdentity {
     match kind {
         ProviderKind::Anthropic => runtime::ModelFamilyIdentity::Claude,
-        ProviderKind::Xai | ProviderKind::OpenAi => runtime::ModelFamilyIdentity::Generic,
+        ProviderKind::Xai | ProviderKind::OpenAi | ProviderKind::Ollama => {
+            runtime::ModelFamilyIdentity::Generic
+        }
     }
 }
 
@@ -293,14 +357,27 @@ pub fn model_token_limit(model: &str) -> Option<ModelTokenLimit> {
     let canonical = resolve_model_alias(model);
     let base_model = canonical.rsplit('/').next().unwrap_or(canonical.as_str());
     match base_model {
+        "claude-opus-4-8" | "claude-fable-5" => Some(ModelTokenLimit {
+            max_output_tokens: 128_000,
+            context_window_tokens: 1_000_000,
+        }),
         "claude-opus-4-6" => Some(ModelTokenLimit {
             max_output_tokens: 32_000,
             context_window_tokens: 200_000,
         }),
-        "claude-sonnet-4-6" | "claude-haiku-4-5-20251213" => Some(ModelTokenLimit {
+        "claude-sonnet-4-6" => Some(ModelTokenLimit {
             max_output_tokens: 64_000,
+            // Sonnet 4.6 ships a 200K context window by default (the 1M window is
+            // a separate beta opt-in); advertising 1M here would make the
+            // preflight under-block requests the API actually rejects.
             context_window_tokens: 200_000,
         }),
+        "claude-haiku-4-5" | "claude-haiku-4-5-20251001" | "claude-haiku-4-5-20251213" => {
+            Some(ModelTokenLimit {
+                max_output_tokens: 64_000,
+                context_window_tokens: 200_000,
+            })
+        }
         "grok-3" | "grok-3-mini" => Some(ModelTokenLimit {
             max_output_tokens: 64_000,
             context_window_tokens: 131_072,

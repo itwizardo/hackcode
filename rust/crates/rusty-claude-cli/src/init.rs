@@ -466,8 +466,8 @@ mod tests {
         assert_eq!(
             created_names,
             vec![
-                ".claw/".to_string(),
-                ".claw.json".to_string(),
+                ".hackcode/".to_string(),
+                ".hackcode.json".to_string(),
                 ".gitignore".to_string(),
                 "CLAUDE.md".to_string(),
             ],
@@ -483,8 +483,8 @@ mod tests {
         assert_eq!(
             skipped_names,
             vec![
-                ".claw/".to_string(),
-                ".claw.json".to_string(),
+                ".hackcode/".to_string(),
+                ".hackcode.json".to_string(),
                 ".gitignore".to_string(),
                 "CLAUDE.md".to_string(),
             ],

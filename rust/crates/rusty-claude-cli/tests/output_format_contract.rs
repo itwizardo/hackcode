@@ -151,7 +151,7 @@ fn inventory_commands_emit_structured_json_when_requested() {
         &[
             ("HOME", isolated_home.to_str().expect("utf8 home")),
             (
-                "CLAW_CONFIG_HOME",
+                "HACKCODE_CONFIG_HOME",
                 isolated_config.to_str().expect("utf8 config home"),
             ),
             (
@@ -228,7 +228,7 @@ fn agents_command_emits_structured_agent_entries_when_requested() {
         &[
             ("HOME", home.to_str().expect("utf8 home")),
             (
-                "CLAW_CONFIG_HOME",
+                "HACKCODE_CONFIG_HOME",
                 isolated_config.to_str().expect("utf8 config home"),
             ),
             (
@@ -263,10 +263,13 @@ fn bootstrap_and_system_prompt_emit_json_when_requested() {
 
     let prompt = assert_json_command(&root, &["--output-format", "json", "system-prompt"]);
     assert_eq!(prompt["kind"], "system-prompt");
+    // HackCode ships its own persona system prompt (not upstream's generic
+    // "interactive agent" Claude Code prompt), so assert the fork's stable
+    // identity marker instead.
     assert!(prompt["message"]
         .as_str()
         .expect("prompt text")
-        .contains("interactive agent"));
+        .contains("HackCode"));
 }
 
 #[test]
@@ -409,7 +412,7 @@ fn resumed_inventory_commands_emit_structured_json_when_requested() {
         ],
         &[
             (
-                "CLAW_CONFIG_HOME",
+                "HACKCODE_CONFIG_HOME",
                 config_home.to_str().expect("utf8 config home"),
             ),
             ("HOME", home.to_str().expect("utf8 home")),
@@ -430,7 +433,7 @@ fn resumed_inventory_commands_emit_structured_json_when_requested() {
         ],
         &[
             (
-                "CLAW_CONFIG_HOME",
+                "HACKCODE_CONFIG_HOME",
                 config_home.to_str().expect("utf8 config home"),
             ),
             ("HOME", home.to_str().expect("utf8 home")),
@@ -452,7 +455,7 @@ fn resumed_inventory_commands_emit_structured_json_when_requested() {
         ],
         &[
             (
-                "CLAW_CONFIG_HOME",
+                "HACKCODE_CONFIG_HOME",
                 config_home.to_str().expect("utf8 config home"),
             ),
             ("HOME", home.to_str().expect("utf8 home")),
@@ -480,7 +483,7 @@ fn resumed_inventory_commands_emit_structured_json_when_requested() {
         ],
         &[
             (
-                "CLAW_CONFIG_HOME",
+                "HACKCODE_CONFIG_HOME",
                 config_home.to_str().expect("utf8 config home"),
             ),
             ("HOME", home.to_str().expect("utf8 home")),
@@ -586,7 +589,7 @@ fn assert_json_command_with_env(current_dir: &Path, args: &[&str], envs: &[(&str
 }
 
 fn run_claw(current_dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_claw"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_hackcode"));
     command.current_dir(current_dir).args(args);
     for (key, value) in envs {
         command.env(key, value);

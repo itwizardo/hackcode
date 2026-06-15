@@ -1239,7 +1239,7 @@ fn execute_tool_with_enforcer(
         }
         "read_file" => {
             let file_input: ReadFileInput = from_value(input)?;
-            let required_mode = classify_file_path_permission(&file_input.path, false);
+            let required_mode = classify_read_path_permission(&file_input.path, false);
             maybe_enforce_permission_check_with_mode(enforcer, name, input, required_mode)?;
             run_read_file(file_input)
         }
@@ -2244,6 +2244,19 @@ fn classify_file_path_permission(path: &str, allow_missing: bool) -> PermissionM
     }
 }
 
+/// Required mode for a *read* of `path`. Reading inside the workspace only needs
+/// read-only access (so read-only mode can still read); reading outside the
+/// workspace escalates to danger-full-access (it can reach secrets like
+/// `~/.ssh/config`). This mirrors `classify_file_path_permission` but with a
+/// read-only floor instead of workspace-write, so reads are not gated like writes.
+fn classify_read_path_permission(path: &str, allow_missing: bool) -> PermissionMode {
+    if path_within_current_workspace(path, allow_missing) {
+        PermissionMode::ReadOnly
+    } else {
+        PermissionMode::DangerFullAccess
+    }
+}
+
 fn classify_glob_permission(input: &GlobSearchInputValue) -> PermissionMode {
     let base_allowed = input
         .path
@@ -2251,7 +2264,7 @@ fn classify_glob_permission(input: &GlobSearchInputValue) -> PermissionMode {
         .is_none_or(|path| path_within_current_workspace(path, false));
     let pattern_allowed = path_within_current_workspace(&input.pattern, true);
     if base_allowed && pattern_allowed {
-        PermissionMode::WorkspaceWrite
+        PermissionMode::ReadOnly
     } else {
         PermissionMode::DangerFullAccess
     }
@@ -2263,7 +2276,7 @@ fn classify_grep_permission(input: &GrepSearchInput) -> PermissionMode {
         .as_deref()
         .is_none_or(|path| path_within_current_workspace(path, false))
     {
-        PermissionMode::WorkspaceWrite
+        PermissionMode::ReadOnly
     } else {
         PermissionMode::DangerFullAccess
     }
@@ -7147,7 +7160,7 @@ mod tests {
             .expect_err("write tool should be denied before dispatch");
 
         // then
-        assert!(error.contains("requires workspace-write permission"));
+        assert!(error.contains("requires 'workspace-write' permission"));
     }
 
     #[test]
@@ -7172,7 +7185,7 @@ mod tests {
         // then
         assert!(error
             .to_string()
-            .contains("requires workspace-write permission"));
+            .contains("requires 'workspace-write' permission"));
     }
 
     #[test]
@@ -7345,7 +7358,7 @@ mod tests {
     fn web_search_extracts_and_filters_results() {
         // Serialize env-var mutation so this test cannot race with the sibling
         // web_search_handles_generic_links_and_invalid_base_url test that also
-        // sets CLAWD_WEB_SEARCH_BASE_URL. Without the lock, parallel test
+        // sets HACKCODE_WEB_SEARCH_BASE_URL. Without the lock, parallel test
         // runners can interleave the set/remove calls and cause assertion
         // failures on the wrong port.
         let _guard = env_lock()
@@ -7366,7 +7379,7 @@ mod tests {
         }));
 
         std::env::set_var(
-            "CLAWD_WEB_SEARCH_BASE_URL",
+            "HACKCODE_WEB_SEARCH_BASE_URL",
             format!("http://{}/search", server.addr()),
         );
         let result = execute_tool(
@@ -7378,7 +7391,7 @@ mod tests {
             }),
         )
         .expect("WebSearch should succeed");
-        std::env::remove_var("CLAWD_WEB_SEARCH_BASE_URL");
+        std::env::remove_var("HACKCODE_WEB_SEARCH_BASE_URL");
 
         let output: serde_json::Value = serde_json::from_str(&result).expect("valid json");
         assert_eq!(output["query"], "rust web search");
@@ -7414,7 +7427,7 @@ mod tests {
         }));
 
         std::env::set_var(
-            "CLAWD_WEB_SEARCH_BASE_URL",
+            "HACKCODE_WEB_SEARCH_BASE_URL",
             format!("http://{}/fallback", server.addr()),
         );
         let result = execute_tool(
@@ -7424,7 +7437,7 @@ mod tests {
             }),
         )
         .expect("WebSearch fallback parsing should succeed");
-        std::env::remove_var("CLAWD_WEB_SEARCH_BASE_URL");
+        std::env::remove_var("HACKCODE_WEB_SEARCH_BASE_URL");
 
         let output: serde_json::Value = serde_json::from_str(&result).expect("valid json");
         let results = output["results"].as_array().expect("results array");
@@ -7437,10 +7450,10 @@ mod tests {
         assert_eq!(content[0]["url"], "https://example.com/one");
         assert_eq!(content[1]["url"], "https://docs.rs/tokio");
 
-        std::env::set_var("CLAWD_WEB_SEARCH_BASE_URL", "://bad-base-url");
+        std::env::set_var("HACKCODE_WEB_SEARCH_BASE_URL", "://bad-base-url");
         let error = execute_tool("WebSearch", &json!({ "query": "generic links" }))
             .expect_err("invalid base URL should fail");
-        std::env::remove_var("CLAWD_WEB_SEARCH_BASE_URL");
+        std::env::remove_var("HACKCODE_WEB_SEARCH_BASE_URL");
         assert!(error.contains("relative URL without a base") || error.contains("empty host"));
     }
 
@@ -7465,7 +7478,7 @@ mod tests {
 
         // when
         std::env::set_var(
-            "CLAWD_WEB_SEARCH_BASE_URL",
+            "HACKCODE_WEB_SEARCH_BASE_URL",
             format!("http://{}/search", server.addr()),
         );
         let result = execute_tool(
@@ -7475,7 +7488,7 @@ mod tests {
             }),
         )
         .expect("WebSearch should succeed");
-        std::env::remove_var("CLAWD_WEB_SEARCH_BASE_URL");
+        std::env::remove_var("HACKCODE_WEB_SEARCH_BASE_URL");
 
         // then
         let output: serde_json::Value = serde_json::from_str(&result).expect("valid json");
@@ -7511,7 +7524,7 @@ mod tests {
 
         // when
         std::env::set_var(
-            "CLAWD_WEB_SEARCH_BASE_URL",
+            "HACKCODE_WEB_SEARCH_BASE_URL",
             format!("http://{}/search", server.addr()),
         );
         let result = execute_tool(
@@ -7521,7 +7534,7 @@ mod tests {
             }),
         )
         .expect("WebSearch should succeed");
-        std::env::remove_var("CLAWD_WEB_SEARCH_BASE_URL");
+        std::env::remove_var("HACKCODE_WEB_SEARCH_BASE_URL");
 
         // then
         let output: serde_json::Value = serde_json::from_str(&result).expect("valid json");
@@ -9947,7 +9960,7 @@ printf 'pwsh:%s' "$1"
             )
             .expect_err("write_file should be denied in read-only mode");
         assert!(
-            err.contains("current mode is read-only"),
+            err.contains("current mode is 'read-only'"),
             "should cite active mode: {err}"
         );
     }
@@ -9962,7 +9975,7 @@ printf 'pwsh:%s' "$1"
             )
             .expect_err("edit_file should be denied in read-only mode");
         assert!(
-            err.contains("current mode is read-only"),
+            err.contains("current mode is 'read-only'"),
             "should cite active mode: {err}"
         );
     }

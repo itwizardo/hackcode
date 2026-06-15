@@ -18,6 +18,19 @@ use crate::usage::{TokenUsage, UsageTracker};
 const DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD: u32 = 100_000;
 const AUTO_COMPACTION_THRESHOLD_ENV_VAR: &str = "CLAUDE_CODE_AUTO_COMPACT_INPUT_TOKENS";
 
+/// Default ceiling on model<->tool round trips within a single user turn.
+/// Without this the interactive loop defaults to `usize::MAX`, so a local
+/// model that keeps emitting tool calls (or keeps hitting the output-token
+/// limit) spins forever. Override with `HACKCODE_MAX_ITERATIONS`.
+const DEFAULT_MAX_ITERATIONS: usize = 80;
+const MAX_ITERATIONS_ENV_VAR: &str = "HACKCODE_MAX_ITERATIONS";
+
+/// Cap on consecutive auto-injected "continue where you left off" prompts.
+/// A local model that streams to the output-token limit on every turn without
+/// producing a tool call or a natural stop would otherwise loop indefinitely
+/// even when the model never asks for a tool.
+const MAX_CONSECUTIVE_LENGTH_CONTINUES: usize = 4;
+
 /// Fully assembled request payload sent to the upstream model client.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiRequest {
@@ -184,7 +197,7 @@ where
             tool_executor,
             permission_policy,
             system_prompt,
-            max_iterations: usize::MAX,
+            max_iterations: max_iterations_from_env(),
             usage_tracker,
             hook_runner: HookRunner::from_feature_config(feature_config),
             auto_compaction_input_tokens_threshold: auto_compaction_threshold_from_env(),
@@ -344,6 +357,7 @@ where
         let mut tool_results = Vec::new();
         let mut prompt_cache_events = Vec::new();
         let mut iterations = 0;
+        let mut consecutive_length_continues = 0;
 
         loop {
             iterations += 1;
@@ -403,10 +417,15 @@ where
                 // If the model stopped because it hit the output token
                 // limit (finish_reason = "length"), automatically inject
                 // a "continue" message so it picks up where it left off.
+                // Cap consecutive continues so a local model that streams
+                // to the limit every turn can't loop forever.
                 let hit_length_limit = stop_reason
                     .as_deref()
                     .map_or(false, |r| r == "length");
-                if hit_length_limit {
+                if hit_length_limit
+                    && consecutive_length_continues < MAX_CONSECUTIVE_LENGTH_CONTINUES
+                {
+                    consecutive_length_continues += 1;
                     self.session
                         .push_user_text("continue where you left off")
                         .map_err(|error| RuntimeError::new(error.to_string()))?;
@@ -414,6 +433,8 @@ where
                 }
                 break;
             }
+            // Real progress (a tool call) resets the length-continue budget.
+            consecutive_length_continues = 0;
 
             for (tool_use_id, tool_name, input) in pending_tool_uses {
                 let pre_hook_result = self.run_pre_tool_use_hook(&tool_name, &input);
@@ -713,6 +734,20 @@ pub fn auto_compaction_threshold_from_env() -> u32 {
     )
 }
 
+/// Resolve the per-turn iteration ceiling, honoring `HACKCODE_MAX_ITERATIONS`.
+/// `0` is treated as "unbounded" for users who explicitly opt out.
+pub fn max_iterations_from_env() -> usize {
+    parse_max_iterations(std::env::var(MAX_ITERATIONS_ENV_VAR).ok().as_deref())
+}
+
+fn parse_max_iterations(value: Option<&str>) -> usize {
+    match value.map(str::trim) {
+        Some("0") => usize::MAX,
+        Some(raw) => raw.parse::<usize>().ok().unwrap_or(DEFAULT_MAX_ITERATIONS),
+        None => DEFAULT_MAX_ITERATIONS,
+    }
+}
+
 #[must_use]
 fn parse_auto_compaction_threshold(value: Option<&str>) -> u32 {
     value
@@ -856,9 +891,10 @@ impl ToolExecutor for StaticToolExecutor {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_assistant_message, parse_auto_compaction_threshold, ApiClient, ApiRequest,
-        AssistantEvent, AutoCompactionEvent, ConversationRuntime, PromptCacheEvent, RuntimeError,
-        StaticToolExecutor, ToolExecutor, DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
+        build_assistant_message, parse_auto_compaction_threshold, parse_max_iterations, ApiClient,
+        ApiRequest, AssistantEvent, AutoCompactionEvent, ConversationRuntime, PromptCacheEvent,
+        RuntimeError, StaticToolExecutor, ToolExecutor, DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
+        DEFAULT_MAX_ITERATIONS,
     };
     use crate::compact::CompactionConfig;
     use crate::config::{RuntimeFeatureConfig, RuntimeHookConfig};
@@ -1646,6 +1682,18 @@ mod tests {
     }
 
     #[test]
+    fn max_iterations_defaults_parses_and_treats_zero_as_unbounded() {
+        assert_eq!(parse_max_iterations(None), DEFAULT_MAX_ITERATIONS);
+        assert_eq!(parse_max_iterations(Some("32")), 32);
+        assert_eq!(parse_max_iterations(Some("  10 ")), 10);
+        assert_eq!(parse_max_iterations(Some("0")), usize::MAX);
+        assert_eq!(
+            parse_max_iterations(Some("not-a-number")),
+            DEFAULT_MAX_ITERATIONS
+        );
+    }
+
+    #[test]
     fn compaction_health_probe_blocks_turn_when_tool_executor_is_broken() {
         struct SimpleApi;
         impl ApiClient for SimpleApi {
@@ -1773,7 +1821,7 @@ mod tests {
         ];
 
         // when
-        let (message, _, _) = build_assistant_message(events)
+        let (message, _, _, _) = build_assistant_message(events)
             .expect("assistant message should preserve thinking, text, and tool blocks");
 
         // then

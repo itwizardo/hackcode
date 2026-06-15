@@ -147,15 +147,11 @@ impl Spinner {
         if SPINNER_ROW_CLEARED.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return;
         }
+        // The animation thread already wipes its line via carriage-return on
+        // exit; do a relative clear here too (no absolute cursor positioning,
+        // which emits stray DECSC/cursor-address escapes in many terminals).
         let mut stdout = io::stdout();
-        let row = SPINNER_ROW.load(std::sync::atomic::Ordering::SeqCst);
-        let _ = execute!(
-            stdout,
-            SavePosition,
-            MoveTo(0, row),
-            Clear(ClearType::CurrentLine),
-            RestorePosition
-        );
+        let _ = execute!(stdout, Print("\r"), Clear(ClearType::CurrentLine));
         let _ = stdout.flush();
     }
 
@@ -203,41 +199,44 @@ impl Spinner {
         };
 
         self.handle = Some(std::thread::spawn(move || {
+            // Braille spinner — animates so a live process is self-evident, and
+            // an elapsed-seconds counter so "slow" is visibly distinct from
+            // "frozen". Rendered on the current line via carriage-return + clear
+            // (no absolute cursor positioning, which silently no-ops in
+            // terminals that don't answer cursor-position queries).
+            const FRAMES: [&str; 10] =
+                ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let start = std::time::Instant::now();
             let mut stdout = io::stdout();
             let mut frame: usize = 0;
             let mut msg_idx: usize = start_idx;
 
             while SPINNER_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) {
-                let row = SPINNER_ROW.load(std::sync::atomic::Ordering::SeqCst);
-                let bit = if frame % 2 == 0 { "0" } else { "1" };
-                let dots = match frame % 3 {
-                    0 => ".  ",
-                    1 => ".. ",
-                    _ => "...",
-                };
+                let glyph = FRAMES[frame % FRAMES.len()];
                 let msg = Self::MESSAGES[msg_idx % Self::MESSAGES.len()];
-
-                // Render right below the prompt — save cursor, jump to
-                // spinner row, draw, then restore cursor so streaming
-                // output is unaffected.
+                let secs = start.elapsed().as_secs();
                 let _ = execute!(
                     stdout,
-                    SavePosition,
-                    MoveTo(0, row),
+                    Print("\r"),
                     Clear(ClearType::CurrentLine),
                     SetForegroundColor(active_color),
-                    Print(format!("{bit} {msg}{dots}")),
+                    Print(format!("{glyph} {msg}… ")),
                     ResetColor,
-                    RestorePosition
+                    SetForegroundColor(Color::DarkGrey),
+                    Print(format!("({secs}s · ctrl-c to stop)")),
+                    ResetColor,
                 );
                 let _ = stdout.flush();
 
                 frame += 1;
-                if frame % 3 == 0 {
+                if frame % 12 == 0 {
                     msg_idx += 1;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(300));
+                std::thread::sleep(std::time::Duration::from_millis(90));
             }
+            // Wipe the status line so streamed output starts on a clean line.
+            let _ = execute!(stdout, Print("\r"), Clear(ClearType::CurrentLine));
+            let _ = stdout.flush();
         }));
 
         Ok(())
@@ -1323,18 +1322,32 @@ mod tests {
     }
 
     #[test]
-    fn spinner_advances_frames() {
+    fn spinner_activates_and_stops() {
+        use std::sync::atomic::Ordering;
+
+        // The redesigned spinner is a fire-and-forget background animation: `tick`
+        // ignores its label and renders rotating status messages on its own thread
+        // rather than writing frames into `out`. The observable contract is the
+        // activation flag, which streaming/finish/fail flip off via `stop_global`.
         let terminal_renderer = TerminalRenderer::new();
         let mut spinner = Spinner::new();
         let mut out = Vec::new();
-        spinner
-            .tick("Working", terminal_renderer.color_theme(), &mut out)
-            .expect("tick succeeds");
-        spinner
-            .tick("Working", terminal_renderer.color_theme(), &mut out)
-            .expect("tick succeeds");
 
-        let output = String::from_utf8_lossy(&out);
-        assert!(output.contains("Working"));
+        spinner
+            .tick("Working", terminal_renderer.color_theme(), &mut out)
+            .expect("tick succeeds");
+        assert!(
+            super::SPINNER_ACTIVE.load(Ordering::SeqCst),
+            "tick should mark the spinner active"
+        );
+
+        assert!(
+            Spinner::stop_global(),
+            "stop_global should report the spinner was running"
+        );
+        assert!(
+            !super::SPINNER_ACTIVE.load(Ordering::SeqCst),
+            "spinner should be inactive after stop_global"
+        );
     }
 }

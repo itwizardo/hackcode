@@ -5735,11 +5735,11 @@ mod tests {
         let _guard = env_guard();
         let workspace = temp_dir("mcp-degrades-144");
         let config_home = temp_dir("mcp-degrades-144-cfg");
-        fs::create_dir_all(workspace.join(".claw")).expect("create workspace .claw dir");
+        fs::create_dir_all(workspace.join(".hackcode")).expect("create workspace .claw dir");
         fs::create_dir_all(&config_home).expect("create config home");
         // One valid server + one malformed entry missing `command`.
         fs::write(
-            workspace.join(".claw.json"),
+            workspace.join(".hackcode.json"),
             r#"{
   "mcpServers": {
     "everything": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-everything"]},
